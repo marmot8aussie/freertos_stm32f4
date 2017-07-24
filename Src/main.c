@@ -52,7 +52,11 @@ RNG_HandleTypeDef hrng;
 
 SPI_HandleTypeDef hspi1;
 
+UART_HandleTypeDef huart2;
+
 WWDG_HandleTypeDef hwwdg;
+
+osThreadId defaultTaskHandle;
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
@@ -70,6 +74,7 @@ static void MX_CRC_Init(void);
 static void MX_IWDG_Init(void);
 static void MX_RNG_Init(void);
 static void MX_WWDG_Init(void);
+static void MX_USART2_UART_Init(void);
 void StartDefaultTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
@@ -90,6 +95,32 @@ BaseType_t sync_task_group[32];
 /*******************************************************************/
 
 
+void USART2_IRQHandler(void)
+{
+	uint8_t u8_Data;
+	static uint8_t u8_Count = 0;
+	//RX
+	if (huart2.Instance->SR & UART_FLAG_RXNE)
+	{
+		u8_Data = huart2.Instance->DR;
+	}
+
+	//TX
+	if (huart2.Instance->SR & UART_FLAG_TXE)
+	{
+		huart2.Instance->DR = 'S';
+
+		u8_Count++;
+
+		if (u8_Count >= 18)
+		{
+			u8_Count = 18;
+			//disable the TRANSFER
+			huart2.Instance->CR1 &= ~USART_CR1_TXEIE;
+			huart2.Instance->SR &= ~UART_FLAG_TC;
+		}
+	}
+}
 
 
 void Set_LED_on(uint32_t led_pos)
@@ -141,16 +172,21 @@ static portTASK_FUNCTION( vTaskMonitor, pvParameters )//void vTaskMonitor(void *
 #define HALF_SECOND (configTICK_RATE_HZ>>1)
 #define ALARM_FREQ	(configTICK_RATE_HZ>>2)
 
-
+	uint8_t pData[2];
+	uint8_t u8_Flag = 0;
 
 	//
 	TickType_t  xLastFlashTime;
 
+
+	HAL_NVIC_EnableIRQ(USART2_IRQn);
 	sync_group = xEventGroupCreate();
 
 
 	xLastFlashTime = xTaskGetTickCount();
 	//
+	pData[0] = 0x55;
+	pData[1] = 0xAA;
 
 	for(;;)
 	{
@@ -168,6 +204,14 @@ static portTASK_FUNCTION( vTaskMonitor, pvParameters )//void vTaskMonitor(void *
 		Set_LED_off(LD4_Pin);
 
 		vTaskDelayUntil(&xLastFlashTime, HALF_SECOND);
+
+		HAL_UART_Transmit(&huart2, pData, 2, 20000);
+		if (!u8_Flag)
+		{
+			u8_Flag = 1;
+			HAL_UART_Transmit_IT(&huart2, &u8_Flag, 1);
+
+		}
 	}
 }
 
@@ -183,7 +227,7 @@ int main(void)
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
-  osThreadId defaultTaskHandle;
+
   /* MCU Configuration----------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
@@ -198,16 +242,10 @@ int main(void)
   MX_I2S3_Init();
   MX_SPI1_Init();
   MX_CRC_Init();
-  MX_IWDG_Init();
+  //MX_IWDG_Init();
   MX_RNG_Init();
-//  MX_WWDG_Init();
-
-  //global variables initialization
-  sync_reference = 0; //this reference counter is increased every second,
-  for (int i=0; i<(sizeof(sync_task_group)/sizeof(BaseType_t)); i++)
-  {
-	  sync_task_group[i] = 0;
-  }
+  //MX_WWDG_Init();
+  MX_USART2_UART_Init();
 
   /* USER CODE BEGIN 2 */
 
@@ -230,18 +268,7 @@ int main(void)
   osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 128);
   defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
-  /*
-   *
-  ortBASE_TYPE xTaskCreate( pdTASK_CODE pvTaskCode,
-	const signed char * const pcName,
-	unsigned short usStackDepth,
-	void *pvParameters,
-	unsigned portBASE_TYPE uxPriority,
-	xTaskHandle *pxCreatedTask
-	);
-   */
   xTaskCreate(vTaskMonitor, "task supervisor", 128, NULL, configMAX_PRIORITIES-1, NULL);
-
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
@@ -424,6 +451,34 @@ static void MX_SPI1_Init(void)
 
 }
 
+/* USART2 init function */
+static void MX_USART2_UART_Init(void)
+{
+//NVIC_InitTypeDef NVIC_InitStructure;
+
+//	NVIC_InitStructure.NVIC_IRQChannel = USART2_IRQn;
+//	NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY + 1;
+//	NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
+//	NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+//	NVIC_Init( &NVIC_InitStructure );
+
+
+
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+}
+
 /* WWDG init function */
 static void MX_WWDG_Init(void)
 {
@@ -536,7 +591,6 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(MEMS_INT2_GPIO_Port, &GPIO_InitStruct);
 
 }
-
 
 /* USER CODE BEGIN 4 */
 
